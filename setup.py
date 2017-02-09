@@ -14,11 +14,13 @@ setup(
         ]
     },
     install_requires = [
+        'html5lib',
         'pytest >= 2.8',
         'six',
         'jupyter_client',
+        'nbconvert',
         'nbformat',
-        'ipykernel'
+        'ipykernel',
     ],
     classifiers = [
         'Framework :: IPython',

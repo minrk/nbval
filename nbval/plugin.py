@@ -6,6 +6,7 @@ Authors: D. Cortes, O. Laslett, T. Kluyver, H. Fangohr, V.T. Fauske
 """
 
 # import the pytest API
+import os
 import pytest
 import sys
 import re
@@ -15,6 +16,7 @@ from collections import OrderedDict, defaultdict
 
 # for python 3 compatibility
 import six
+from six.moves.urllib.request import urlopen
 
 try:
     from Queue import Empty
@@ -28,6 +30,10 @@ from nbformat import NotebookNode
 # Kernel for running notebooks
 from .kernel import RunningKernel, CURRENT_ENV_KERNEL_NAME
 
+
+# for dealing with markdown cells
+import html5lib
+from nbconvert.filters import markdown2html
 
 # define colours for pretty outputs
 class bcolors:
@@ -75,6 +81,9 @@ def pytest_addoption(parser):
                     help='Force test execution to use a python kernel in '
                          'the same enviornment that py.test was '
                          'launched from.')
+
+    group.addoption('--check-links', action='store_true',
+                    help='Check that links in markdown cells resolve.')
 
     group.addoption('--nbval-cell-timeout', action='store', default=2000,
                     type=float,
@@ -256,11 +265,8 @@ class IPyNbFile(pytest.File):
 
         self.nb = nbformat.read(str(self.fspath), as_version=4)
 
-        # Start the cell count
-        cell_num = 0
-
         # Iterate over the cells in the notebook
-        for cell in self.nb.cells:
+        for cell_num, cell in enumerate(self.nb.cells):
             # Skip the cells that have text, headings or related stuff
             # Only test code cells
             if cell.cell_type == 'code':
@@ -286,9 +292,10 @@ class IPyNbFile(pytest.File):
                 options.setdefault('check', self.compare_outputs)
                 yield IPyNbCodeCell('Cell ' + str(cell_num), self, cell_num,
                                 cell, options)
-
-            # Update 'code' cell count
-            cell_num += 1
+            elif cell.cell_type == 'markdown' and self.parent.config.option.check_links:
+                for link in links_in_markdown('Cell ' + str(cell_num), self, cell_num,
+                                cell):
+                    yield link
 
     def teardown(self):
         if self.kernel is not None and self.kernel.is_alive():
@@ -775,3 +782,105 @@ def _trim_base64(s):
         h = hash_string(s)
         s = '%s...<snip base64, md5=%s...>' % (s[:8], h[:16])
     return s
+
+
+# Markdown cell handling
+
+
+class BrokenLinkError(Exception):
+    def __init__(self, url, error):
+        self.url = url
+        self.error = error
+
+    def __repr__(self):
+        return "<%s url=%s, error=%s>" % (
+            self.__class__.__name__, self.url, self.error
+        )
+
+
+def links_in_markdown(base_name, parent, cell_num, cell):
+    """Yield LinkItems from a markdown cell
+    
+    Renders markdown to HTML, then parses HTML with html5lib.
+    """
+    if cell.cell_type != 'markdown':
+        raise ValueError("I only run on markdown cells")
+
+    html = markdown2html(cell.source)
+    parsed = html5lib.parse(html, namespaceHTMLElements=False)
+
+    for element in parsed.getiterator():
+        url = None
+        tag = element.tag
+        if tag == 'a':
+            attr = 'href'
+            url = element.get('href', '')
+            if url.startswith('#'):
+                # skip internal links
+                continue
+        elif tag in {'img', 'iframe'}:
+            attr = 'src'
+        else:
+            continue
+
+        url = element.get(attr)
+        name = '{} <{} {}={}>'.format(base_name, tag, attr, url)
+
+        if url:
+            if ':' in url:
+                proto = url.split(':', 1)[0]
+                if proto.lower() not in {'http', 'https'}:
+                    # ignore non-http links (mailto:, data:, etc.)
+                    continue
+            yield LinkItem(name, parent, url, 'Cell %i' % cell_num)
+
+
+class LinkItem(pytest.Item):
+    """Test item for an HTML link
+
+    Args:
+
+        name, parent: inherited from pytest.Item
+        target (str): The URL or path target for the link
+        fspath (localpath): The file containing the link (for relative URLs)
+    """
+    def __init__(self, name, parent, target, description=''):
+        super(LinkItem, self).__init__(name, parent)
+        self.target = target
+        self.description = description or target
+
+    def repr_failure(self, excinfo):
+        exc = excinfo.value
+        if isinstance(exc, BrokenLinkError):
+            return ''.join([
+                    bcolors.FAIL,
+                    '{}: {}'.format(exc.url, exc.error),
+                    bcolors.ENDC,
+            ])
+        else:
+            return super(LinkItem, self).repr_failure(excinfo)
+
+    def reportinfo(self):
+        return self.fspath, 0, self.description
+
+    def runtest(self):
+        if ':' in self.target:
+            # external reference, download
+            try:
+                f = urlopen(self.target)
+            except Exception as e:
+                raise BrokenLinkError(self.target, str(e))
+            else:
+                code = f.getcode()
+                f.close()
+                if code >= 400:
+                    raise BrokenLinkError(self.target, str(code))
+        else:
+            if self.target.startswith('/'):
+                raise BrokenLinkError(self.target, "absolute path link")
+            # relative URL
+            url_path = self.target.replace('/', os.path.sep)
+            target_path = self.fspath.dirpath().join(url_path)
+            if not target_path.exists():
+                raise BrokenLinkError(self.target, "No such file: %s" % target_path)
+
