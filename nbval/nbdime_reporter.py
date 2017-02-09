@@ -21,7 +21,7 @@ import nbformat
 import nbdime
 from nbdime.webapp.nbdiffweb import run_server, browse
 
-from .plugin import IPyNbCell, bcolors
+from .plugin import IPyNbCodeCell, bcolors
 
 nbdime.log.set_nbdime_log_level('ERROR')
 
@@ -53,7 +53,7 @@ class NbdimeReporter:
     def pytest_collectreport(self, report):
         """Store all collected nbval tests for evaluation on finish
         """
-        items = [x for x in report.result if isinstance(x, IPyNbCell)]
+        items = [x for x in report.result if isinstance(x, IPyNbCodeCell)]
         self.nbval_items.extend(items)
         self._numcollected += len(items)
 

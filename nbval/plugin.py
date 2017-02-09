@@ -284,7 +284,7 @@ class IPyNbFile(pytest.File):
                                 cell_num))
                 options.update(comment_opts)
                 options.setdefault('check', self.compare_outputs)
-                yield IPyNbCell('Cell ' + str(cell_num), self, cell_num,
+                yield IPyNbCodeCell('Cell ' + str(cell_num), self, cell_num,
                                 cell, options)
 
             # Update 'code' cell count
@@ -295,9 +295,9 @@ class IPyNbFile(pytest.File):
             self.kernel.stop()
 
 
-class IPyNbCell(pytest.Item):
+class IPyNbCodeCell(pytest.Item):
     def __init__(self, name, parent, cell_num, cell, options):
-        super(IPyNbCell, self).__init__(name, parent)
+        super(IPyNbCodeCell, self).__init__(name, parent)
 
         # Store reference to parent IPynbFile so that we have access
         # to the running kernel.
